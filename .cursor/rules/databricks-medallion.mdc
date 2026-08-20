@@ -1,0 +1,67 @@
+---
+description: Databricks Medallion architecture, PySpark/Delta standards, and quality rules for this assessment.
+globs: "**/*.{py,sql,ipynb}"
+alwaysApply: true
+---
+
+# Databricks Medallion Data Engineering Rules
+
+## Stack & Environment
+
+- Target platform: Databricks Community Edition (Free) (single-node cluster, PySpark, Spark SQL)
+- Language: Python 3.10+, PySpark SQL, Delta Lake
+- IDE: Cursor (Composer / Agent Mode)
+- Assume a Databricks notebook or job runtime (`spark` session already exists). Do not invent a local SparkSession unless writing a documented local-test helper.
+- Prefer Delta Lake reads/writes (`format("delta")` or `saveAsTable`). Do not use CSV/Parquet as the layer-of-record for Bronze/Silver/Gold.
+
+## Core Pipeline Principles
+
+1. Medallion Architecture:
+   - Bronze: raw ingestion, append-only, source schema preserved, metadata columns `_ingested_at` (timestamp) and `_source_file` (string).
+   - Silver: cleaned data, explicit schema enforcement, NULL handling, `quality_check_result` flags, deduplication. Never silently drop rows.
+   - Gold: business-level aggregations and analytics tables optimized for BI.
+2. Code Standards:
+   - Use explicit PySpark schemas (`StructType`, `StructField`) instead of implicit schema inference.
+   - Write functional, modular PySpark (ingest / transform / validate / write as separate functions).
+   - Emit clear log output (`print` or Spark logger) at each layer: row counts, defect counts, write path.
+   - In every script, include inline documentation that explains AI rationale and validation steps.
+3. Quality & Validation Strategy:
+   - Do not drop invalid rows; flag them with error codes or metadata columns.
+   - Catch 100% of intentional defects: NULLs, duplicate IDs, missing foreign keys.
+   - Valid Spark types only: `StringType`, `IntegerType`, `LongType`, `DoubleType`, `BooleanType`, `DateType`, `TimestampType`, `DecimalType`, `ArrayType`, `MapType`, `StructType`. Never use pandas dtypes or Python `int`/`str` as Spark field types.
+
+## Prohibited Patterns
+
+- Never use pandas (`pd.DataFrame`, `toPandas()`, `pandas.read_*`) where PySpark DataFrames are required.
+- Never hardcode credentials or absolute local paths (`C:\...`, `/Users/...`). Use DBFS/UC-style paths such as `/dbfs/tmp/` or relative path helpers.
+- Never `inferSchema=True` on production ingest. Never `df.write.mode("overwrite")` on Bronze (append-only).
+- Never `dropna()` / `filter` away defect rows as the quality strategy; flag them instead.
+- Never use Unity Catalog three-level names if the runtime is Community Edition without UC; use Hive metastore / DBFS Delta paths.
+
+## Required Patterns
+
+```python
+# BAD — inference, pandas, dropped rows
+df = spark.read.option("inferSchema", "true").csv(path)
+pdf = df.toPandas()
+clean = df.dropna()
+
+# GOOD — explicit schema, Spark-only, flag defects
+from pyspark.sql.types import StructType, StructField, StringType, TimestampType, IntegerType
+from pyspark.sql import functions as F
+
+schema = StructType([
+    StructField("order_id", StringType(), False),
+    StructField("amount", IntegerType(), True),
+])
+df = spark.read.schema(schema).csv(path)
+df = (
+    df.withColumn("_ingested_at", F.current_timestamp())
+      .withColumn("_source_file", F.input_file_name())
+      .withColumn(
+          "quality_check_result",
+          F.when(F.col("order_id").isNull(), F.lit("NULL_PK")).otherwise(F.lit("PASS")),
+      )
+)
+df.write.format("delta").mode("append").save("/dbfs/tmp/bronze/orders")
+```
