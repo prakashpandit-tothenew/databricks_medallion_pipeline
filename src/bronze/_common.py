@@ -24,6 +24,7 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import StructType
 
 BRONZE_BASE_PATH = "/Volumes/poc_catalog/default/poc_volume/bronze"
+BRONZE_TABLE_SCHEMA = "poc_catalog.default"
 METADATA_COLUMNS = ["_ingestion_timestamp", "_source_file"]
 _TABLE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -125,10 +126,18 @@ def _validate_table_name(table_name: str) -> None:
         )
 
 
-def _table_count(spark: SparkSession, table_name: str) -> int:
-    if not spark.catalog.tableExists(table_name):
+def _qualified_table_name(table_name: str) -> str:
+    if "." in table_name:
+        return table_name
+    return f"{BRONZE_TABLE_SCHEMA}.{table_name}"
+
+
+def _delta_count(spark: SparkSession, target_path: str) -> int:
+    """Count existing Delta rows at a Volume path; 0 if the folder is new."""
+    try:
+        return spark.read.format("delta").load(target_path).count()
+    except Exception:
         return 0
-    return spark.table(table_name).count()
 
 
 def write_append_delta(
@@ -139,18 +148,14 @@ def write_append_delta(
     source_count: int,
     source_columns: Sequence[str],
 ) -> Tuple[int, int]:
-    """Append to a path-backed Hive-metastore Delta table and validate counts."""
-    _validate_table_name(table_name)
-    target_count_before = _table_count(spark, table_name)
+    """Append Delta files to a Unity Catalog Volume and register the table."""
+    _validate_table_name(table_name.split(".")[-1])
+    target_count_before = _delta_count(spark, target_path)
 
-    (
-        dataframe.write.format("delta")
-        .mode("append")
-        .option("path", target_path)
-        .saveAsTable(table_name)
-    )
+    # Volume paths cannot use Hive saveAsTable + path (missing cloud scheme).
+    dataframe.write.format("delta").mode("append").save(target_path)
 
-    target_dataframe = spark.table(table_name)
+    target_dataframe = spark.read.format("delta").load(target_path)
     expected_columns = [*source_columns, *METADATA_COLUMNS]
     if target_dataframe.columns != expected_columns:
         raise ValueError(
@@ -165,6 +170,12 @@ def write_append_delta(
             f"Bronze table {table_name} count mismatch after append: "
             f"expected {expected_target_count:,}, got {target_count_after:,}"
         )
+
+    qualified_name = _qualified_table_name(table_name)
+    spark.sql(
+        f"CREATE TABLE IF NOT EXISTS {qualified_name} "
+        f"USING DELTA LOCATION '{target_path}'"
+    )
     return target_count_before, target_count_after
 
 
