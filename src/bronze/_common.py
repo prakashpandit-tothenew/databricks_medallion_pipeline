@@ -107,9 +107,10 @@ def validate_source_dataframe(
 def add_bronze_metadata(dataframe: DataFrame) -> DataFrame:
     """Add lineage columns without modifying any source column."""
     source_columns = dataframe.columns
+    # Unity Catalog rejects input_file_name(); use the file-source metadata column.
     bronze_dataframe = (
         dataframe.withColumn("_ingestion_timestamp", F.current_timestamp())
-        .withColumn("_source_file", F.input_file_name())
+        .withColumn("_source_file", F.col("_metadata.file_path"))
     )
     if bronze_dataframe.columns != [*source_columns, *METADATA_COLUMNS]:
         raise ValueError("Bronze metadata columns were not added as expected")
