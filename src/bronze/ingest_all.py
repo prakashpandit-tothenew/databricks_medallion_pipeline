@@ -92,9 +92,10 @@ def ingest_all(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run all Bronze ingestions.")
-    parser.add_argument("--input-base-path", default="data")
+    parser.add_argument("--input-base-path", default="/Volumes/poc_catalog/default/poc_volume")
     parser.add_argument("--bronze-base-path", default=BRONZE_BASE_PATH)
-    args = parser.parse_args()
+    # Databricks notebooks inject kernel flags such as -f connection.json.
+    args, _ = parser.parse_known_args()
 
     spark, owns_session = get_or_create_spark("bronze-ingest-all")
     try:

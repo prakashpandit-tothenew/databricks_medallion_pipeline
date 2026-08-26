@@ -78,10 +78,11 @@ def ingest_products(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest Products into Bronze Delta.")
-    parser.add_argument("--source-file", default="data/products.csv")
+    parser.add_argument("--source-file", default="/Volumes/poc_catalog/default/poc_volume/products.csv")
     parser.add_argument("--bronze-base-path", default=BRONZE_BASE_PATH)
     parser.add_argument("--table-name", default="bronze_products")
-    args = parser.parse_args()
+    # Databricks notebooks inject kernel flags such as -f connection.json.
+    args, _ = parser.parse_known_args()
 
     spark, owns_session = get_or_create_spark("bronze-ingest-products")
     try:

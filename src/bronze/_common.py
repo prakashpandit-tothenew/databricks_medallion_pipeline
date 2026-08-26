@@ -23,7 +23,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType
 
-BRONZE_BASE_PATH = "dbfs:/tmp/databricks_medallion_pipeline/bronze"
+BRONZE_BASE_PATH = "/Volumes/poc_catalog/default/poc_volume/bronze"
 METADATA_COLUMNS = ["_ingestion_timestamp", "_source_file"]
 _TABLE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -49,12 +49,15 @@ def join_path(base_path: str, child: str) -> str:
 
 
 def source_exists(spark: SparkSession, source_file: str) -> bool:
-    """Check local, DBFS, or Hadoop-compatible paths through Spark's filesystem."""
-    jvm = spark.sparkContext._jvm
-    hadoop_configuration = spark.sparkContext._jsc.hadoopConfiguration()
-    source_path = jvm.org.apache.hadoop.fs.Path(source_file)
-    filesystem = source_path.getFileSystem(hadoop_configuration)
-    return bool(filesystem.exists(source_path))
+    """Check local, DBFS, or Volume paths without JVM-only Spark APIs."""
+    try:
+        # A one-line text read works with classic Spark and Spark Connect,
+        # including Databricks serverless paths under /Volumes.
+        return spark.read.text(source_file).limit(1).count() > 0
+    except Exception as error:
+        raise FileNotFoundError(
+            f"Bronze source file is missing or inaccessible: {source_file}"
+        ) from error
 
 
 def read_source_csv(
@@ -198,11 +201,12 @@ def ingest_csv_to_delta(
             source_count=source_count,
             source_columns=expected_columns,
         )
-    except Exception:
+    except Exception as error:
         duration = perf_counter() - timer_started
         print(
             f"[BRONZE FAILED] source={source_file} | target={table_name} | "
-            f"duration_seconds={duration:.2f}"
+            f"duration_seconds={duration:.2f} | "
+            f"error={type(error).__name__}: {error}"
         )
         raise
 
