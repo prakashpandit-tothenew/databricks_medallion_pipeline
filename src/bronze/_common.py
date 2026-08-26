@@ -132,10 +132,10 @@ def _qualified_table_name(table_name: str) -> str:
     return f"{BRONZE_TABLE_SCHEMA}.{table_name}"
 
 
-def _delta_count(spark: SparkSession, target_path: str) -> int:
-    """Count existing Delta rows at a Volume path; 0 if the folder is new."""
+def _table_count(spark: SparkSession, qualified_name: str) -> int:
+    """Count existing managed-table rows; 0 if the table does not exist yet."""
     try:
-        return spark.read.format("delta").load(target_path).count()
+        return spark.table(qualified_name).count()
     except Exception:
         return 0
 
@@ -148,18 +148,20 @@ def write_append_delta(
     source_count: int,
     source_columns: Sequence[str],
 ) -> Tuple[int, int]:
-    """Append Delta files to a Unity Catalog Volume and register the table."""
+    """Append to a Unity Catalog managed Delta table (no external LOCATION)."""
+    del target_path  # Volumes are for CSV landing; UC stores managed table files.
     _validate_table_name(table_name.split(".")[-1])
-    target_count_before = _delta_count(spark, target_path)
+    qualified_name = _qualified_table_name(table_name)
+    target_count_before = _table_count(spark, qualified_name)
 
-    # Volume paths cannot use Hive saveAsTable + path (missing cloud scheme).
-    dataframe.write.format("delta").mode("append").save(target_path)
+    # Managed tables do not accept LOCATION/path; UC provisions storage.
+    dataframe.write.format("delta").mode("append").saveAsTable(qualified_name)
 
-    target_dataframe = spark.read.format("delta").load(target_path)
+    target_dataframe = spark.table(qualified_name)
     expected_columns = [*source_columns, *METADATA_COLUMNS]
     if target_dataframe.columns != expected_columns:
         raise ValueError(
-            f"Bronze table {table_name} columns do not match: "
+            f"Bronze table {qualified_name} columns do not match: "
             f"expected {expected_columns}, got {target_dataframe.columns}"
         )
 
@@ -167,15 +169,9 @@ def write_append_delta(
     expected_target_count = target_count_before + source_count
     if target_count_after != expected_target_count:
         raise ValueError(
-            f"Bronze table {table_name} count mismatch after append: "
+            f"Bronze table {qualified_name} count mismatch after append: "
             f"expected {expected_target_count:,}, got {target_count_after:,}"
         )
-
-    qualified_name = _qualified_table_name(table_name)
-    spark.sql(
-        f"CREATE TABLE IF NOT EXISTS {qualified_name} "
-        f"USING DELTA LOCATION '{target_path}'"
-    )
     return target_count_before, target_count_after
 
 
@@ -192,9 +188,10 @@ def ingest_csv_to_delta(
     """Run and log one append-only Bronze ingestion."""
     started_at = datetime.now(timezone.utc)
     timer_started = perf_counter()
+    qualified_name = _qualified_table_name(table_name)
     print(
         f"[BRONZE START] {started_at.isoformat()} | "
-        f"source={source_file} | target={table_name}"
+        f"source={source_file} | target={qualified_name}"
     )
 
     try:
@@ -216,7 +213,7 @@ def ingest_csv_to_delta(
     except Exception as error:
         duration = perf_counter() - timer_started
         print(
-            f"[BRONZE FAILED] source={source_file} | target={table_name} | "
+            f"[BRONZE FAILED] source={source_file} | target={qualified_name} | "
             f"duration_seconds={duration:.2f} | "
             f"error={type(error).__name__}: {error}"
         )
@@ -226,17 +223,17 @@ def ingest_csv_to_delta(
     duration = perf_counter() - timer_started
     print(
         f"[BRONZE COMPLETE] {completed_at.isoformat()} | "
-        f"target={table_name} | before={target_count_before:,} | "
+        f"target={qualified_name} | before={target_count_before:,} | "
         f"appended={source_count:,} | after={target_count_after:,} | "
         f"duration_seconds={duration:.2f}"
     )
     return IngestionResult(
         source_file=source_file,
         source_count=source_count,
-        target_table=table_name,
+        target_table=qualified_name,
         target_count_before=target_count_before,
         target_count_after=target_count_after,
-        target_path=target_path,
+        target_path=qualified_name,
         started_at=started_at,
         completed_at=completed_at,
         duration_seconds=duration,
