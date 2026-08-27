@@ -83,6 +83,11 @@ No manual user edits were reported during implementation.
   - Product failures: Completeness 0, Logic/Type 1.
   - Order failures: Completeness 1, Uniqueness 2,
     Referential Integrity 2, Logic/Type 1.
+- Full generated CSV validation preserved all source rows and reported:
+  - Customers (10,000): Completeness 50, Uniqueness 20, Logic/Type 0.
+  - Products (500): Completeness 0, Logic/Type 0.
+  - Orders (100,000): Completeness 300, Uniqueness 40,
+    Referential Integrity 80, Logic/Type 0.
 - Managed Delta writes were not executed locally because the local PySpark
   runtime does not provide Databricks Unity Catalog. The write paths use
   `saveAsTable` and are intended for the existing Databricks workspace.
