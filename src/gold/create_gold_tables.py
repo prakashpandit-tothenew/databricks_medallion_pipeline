@@ -51,15 +51,41 @@ def get_or_create_spark(app_name: str) -> Tuple[SparkSession, bool]:
     return SparkSession.builder.appName(app_name).getOrCreate(), True
 
 
-def _sql_directory() -> Path:
-    return Path(__file__).resolve().parent
+def _sql_directory(sql_dir: str | None = None) -> Path:
+    """Resolve the Gold SQL folder in scripts and Databricks notebooks."""
+    marker = GOLD_JOBS[0][0]
+    if sql_dir:
+        candidate = Path(sql_dir)
+        if (candidate / marker).is_file():
+            return candidate
+        raise FileNotFoundError(
+            f"Gold SQL file {marker} was not found under {candidate}"
+        )
+
+    try:
+        script_dir = Path(__file__).resolve().parent
+        if (script_dir / marker).is_file():
+            return script_dir
+    except NameError:
+        pass
+
+    search_roots = [Path.cwd(), *Path.cwd().parents]
+    for root in search_roots:
+        for candidate in (root / "src" / "gold", root):
+            if (candidate / marker).is_file():
+                return candidate
+
+    raise FileNotFoundError(
+        "Gold SQL files were not found. In a Databricks notebook pass "
+        "sql_dir='/Workspace/Repos/<user>/<repo>/src/gold' to create_gold_tables()."
+    )
 
 
-def load_sql(sql_file: str) -> str:
-    """Read one Gold SQL script from the same folder as this runner."""
-    sql_path = _sql_directory() / sql_file
+def load_sql(sql_file: str, sql_dir: str | None = None) -> str:
+    """Read one Gold SQL script from the Gold source folder."""
+    sql_path = _sql_directory(sql_dir) / sql_file
     if not sql_path.is_file():
-        raise FileNotFoundError(f"Gold SQL file does not exist: {sql_path.name}")
+        raise FileNotFoundError(f"Gold SQL file does not exist: {sql_path}")
     statement = sql_path.read_text(encoding="utf-8").strip()
     if not statement:
         raise ValueError(f"Gold SQL file is empty: {sql_path.name}")
@@ -70,6 +96,7 @@ def execute_gold_sql(
     spark: SparkSession,
     sql_file: str,
     target_table: str,
+    sql_dir: str | None = None,
 ) -> GoldTableResult:
     """Run one CREATE OR REPLACE TABLE script and log the resulting count."""
     started_at = datetime.now(timezone.utc)
@@ -79,7 +106,7 @@ def execute_gold_sql(
         f"target={target_table}"
     )
     try:
-        spark.sql(load_sql(sql_file))
+        spark.sql(load_sql(sql_file, sql_dir))
         row_count = spark.table(target_table).count()
     except Exception as error:
         duration = perf_counter() - timer_started
@@ -99,10 +126,15 @@ def execute_gold_sql(
     return GoldTableResult(sql_file, target_table, row_count, duration)
 
 
-def create_gold_tables(spark: SparkSession) -> list[GoldTableResult]:
+def create_gold_tables(
+    spark: SparkSession,
+    sql_dir: str | None = None,
+) -> list[GoldTableResult]:
     """Persist all four Gold aggregation tables from Silver PASSED rows."""
+    sql_folder = _sql_directory(sql_dir)
+    print(f"[GOLD SQL DIR] {sql_folder}")
     results = [
-        execute_gold_sql(spark, sql_file, target_table)
+        execute_gold_sql(spark, sql_file, target_table, str(sql_folder))
         for sql_file, target_table in GOLD_JOBS
     ]
     summary = " | ".join(
@@ -117,11 +149,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Build Gold Delta tables from Silver PASSED aggregations."
     )
-    parser.parse_known_args()
+    parser.add_argument(
+        "--sql-dir",
+        default=None,
+        help="Folder containing the Gold .sql files (required in some notebooks).",
+    )
+    args, _ = parser.parse_known_args()
 
     spark, owns_session = get_or_create_spark("gold-create-tables")
     try:
-        create_gold_tables(spark)
+        create_gold_tables(spark, args.sql_dir)
     finally:
         if owns_session:
             spark.stop()
