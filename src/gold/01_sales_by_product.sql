@@ -18,8 +18,8 @@ SELECT
 FROM poc_catalog.default.silver_orders AS o
 INNER JOIN poc_catalog.default.silver_products AS p
   ON o.product_id = p.product_id
-WHERE o.quality_check_result = 'PASSED'
-  AND p.quality_check_result = 'PASSED'
+WHERE upper(trim(o.quality_check_result)) IN ('PASSED', 'PASS')
+  AND upper(trim(p.quality_check_result)) IN ('PASSED', 'PASS')
 GROUP BY
   p.product_id,
   p.product_name,

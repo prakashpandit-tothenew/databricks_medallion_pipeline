@@ -14,7 +14,7 @@ SELECT
     SUM(o.total_amount) / COUNT(DISTINCT o.order_id) AS DECIMAL(18, 2)
   ) AS avg_order_value
 FROM poc_catalog.default.silver_orders AS o
-WHERE o.quality_check_result = 'PASSED'
+WHERE upper(trim(o.quality_check_result)) IN ('PASSED', 'PASS')
 GROUP BY o.order_date
 
 UNION ALL
@@ -28,6 +28,6 @@ SELECT
     SUM(o.total_amount) / COUNT(DISTINCT o.order_id) AS DECIMAL(18, 2)
   ) AS avg_order_value
 FROM poc_catalog.default.silver_orders AS o
-WHERE o.quality_check_result = 'PASSED'
+WHERE upper(trim(o.quality_check_result)) IN ('PASSED', 'PASS')
 GROUP BY CAST(DATE_TRUNC('WEEK', o.order_date) AS DATE)
 ;

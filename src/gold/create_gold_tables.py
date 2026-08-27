@@ -25,12 +25,79 @@ from pyspark.sql import SparkSession
 
 TABLE_SCHEMA = "poc_catalog.default"
 
+SILVER_TABLES: Sequence[str] = (
+    f"{TABLE_SCHEMA}.silver_customers",
+    f"{TABLE_SCHEMA}.silver_products",
+    f"{TABLE_SCHEMA}.silver_orders",
+)
+
 GOLD_JOBS: Sequence[Tuple[str, str]] = (
     ("01_sales_by_product.sql", f"{TABLE_SCHEMA}.gold_sales_by_product"),
     ("02_revenue_by_customer.sql", f"{TABLE_SCHEMA}.gold_revenue_by_customer"),
     ("03_daily_weekly_trends.sql", f"{TABLE_SCHEMA}.gold_daily_weekly_trends"),
     ("04_customer_segmentation.sql", f"{TABLE_SCHEMA}.gold_customer_segmentation"),
 )
+
+
+def _table_exists(spark: SparkSession, table_name: str) -> bool:
+    try:
+        spark.table(table_name).limit(0)
+        return True
+    except Exception:
+        return False
+
+
+def assert_silver_ready(spark: SparkSession) -> None:
+    """Fail fast when Silver is missing, empty, or has no PASSED rows."""
+    print("[GOLD PREFLIGHT] Silver source counts")
+    passed_by_table = {}
+    for table_name in SILVER_TABLES:
+        if not _table_exists(spark, table_name):
+            raise FileNotFoundError(
+                f"Silver table {table_name} does not exist. "
+                "Run src/silver/transform_all.py before Gold."
+            )
+        total = spark.table(table_name).count()
+        passed = spark.sql(
+            f"""
+            SELECT count(*) AS passed_count
+            FROM {table_name}
+            WHERE upper(trim(coalesce(quality_check_result, ''))) IN ('PASSED', 'PASS')
+            """
+        ).collect()[0]["passed_count"]
+        statuses = [
+            row["quality_check_result"]
+            for row in spark.sql(
+                f"""
+                SELECT quality_check_result, count(*) AS row_count
+                FROM {table_name}
+                GROUP BY quality_check_result
+                ORDER BY row_count DESC
+                """
+            ).collect()
+        ]
+        passed_by_table[table_name] = passed
+        print(
+            f"[GOLD PREFLIGHT] {table_name} | total={total:,} | "
+            f"passed={passed:,} | quality_check_result={statuses}"
+        )
+        if total == 0:
+            raise ValueError(
+                f"{table_name} is empty. Re-run Silver (transform_all) on "
+                "populated Bronze tables before Gold."
+            )
+
+    if passed_by_table[f"{TABLE_SCHEMA}.silver_customers"] == 0:
+        raise ValueError(
+            "No Silver customers have quality_check_result PASSED/PASS. "
+            "Inspect poc_catalog.default.silver_customers before Gold."
+        )
+    if passed_by_table[f"{TABLE_SCHEMA}.silver_orders"] == 0:
+        raise ValueError(
+            "No Silver orders have quality_check_result PASSED/PASS. "
+            "Inspect poc_catalog.default.silver_orders before Gold."
+        )
+
 
 
 @dataclass(frozen=True)
@@ -133,6 +200,7 @@ def create_gold_tables(
     """Persist all four Gold aggregation tables from Silver PASSED rows."""
     sql_folder = _sql_directory(sql_dir)
     print(f"[GOLD SQL DIR] {sql_folder}")
+    assert_silver_ready(spark)
     results = [
         execute_gold_sql(spark, sql_file, target_table, str(sql_folder))
         for sql_file, target_table in GOLD_JOBS

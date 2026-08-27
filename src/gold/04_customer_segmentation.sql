@@ -16,8 +16,8 @@ WITH customer_activity AS (
   FROM poc_catalog.default.silver_customers AS c
   LEFT JOIN poc_catalog.default.silver_orders AS o
     ON c.customer_id = o.customer_id
-   AND o.quality_check_result = 'PASSED'
-  WHERE c.quality_check_result = 'PASSED'
+   AND upper(trim(o.quality_check_result)) IN ('PASSED', 'PASS')
+  WHERE upper(trim(c.quality_check_result)) IN ('PASSED', 'PASS')
   GROUP BY c.customer_id
 ),
 segmented AS (
