@@ -1,0 +1,131 @@
+"""Execute Gold SQL aggregations and persist managed Delta tables.
+
+AI rationale:
+    Keep business logic in Spark SQL files so Databricks SQL and PySpark share
+    one definition. This runner only loads those files, executes them, and logs
+    table row counts. Gold uses overwrite-style CREATE OR REPLACE (idempotent);
+    Bronze remains append-only.
+
+Validation:
+    Each SQL file must produce its managed table. After execution the runner
+    asserts the table exists and logs row counts. Measures come from Silver
+    rows where quality_check_result = 'PASSED'; defective rows stay in Silver.
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from time import perf_counter
+from typing import Sequence, Tuple
+
+from pyspark.sql import SparkSession
+
+TABLE_SCHEMA = "poc_catalog.default"
+
+GOLD_JOBS: Sequence[Tuple[str, str]] = (
+    ("01_sales_by_product.sql", f"{TABLE_SCHEMA}.gold_sales_by_product"),
+    ("02_revenue_by_customer.sql", f"{TABLE_SCHEMA}.gold_revenue_by_customer"),
+    ("03_daily_weekly_trends.sql", f"{TABLE_SCHEMA}.gold_daily_weekly_trends"),
+    ("04_customer_segmentation.sql", f"{TABLE_SCHEMA}.gold_customer_segmentation"),
+)
+
+
+@dataclass(frozen=True)
+class GoldTableResult:
+    """Outcome of one Gold SQL persistence."""
+
+    sql_file: str
+    target_table: str
+    row_count: int
+    duration_seconds: float
+
+
+def get_or_create_spark(app_name: str) -> Tuple[SparkSession, bool]:
+    """Reuse Databricks' session or create one under spark-submit."""
+    active_session = SparkSession.getActiveSession()
+    if active_session is not None:
+        return active_session, False
+    return SparkSession.builder.appName(app_name).getOrCreate(), True
+
+
+def _sql_directory() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def load_sql(sql_file: str) -> str:
+    """Read one Gold SQL script from the same folder as this runner."""
+    sql_path = _sql_directory() / sql_file
+    if not sql_path.is_file():
+        raise FileNotFoundError(f"Gold SQL file does not exist: {sql_path.name}")
+    statement = sql_path.read_text(encoding="utf-8").strip()
+    if not statement:
+        raise ValueError(f"Gold SQL file is empty: {sql_path.name}")
+    return statement
+
+
+def execute_gold_sql(
+    spark: SparkSession,
+    sql_file: str,
+    target_table: str,
+) -> GoldTableResult:
+    """Run one CREATE OR REPLACE TABLE script and log the resulting count."""
+    started_at = datetime.now(timezone.utc)
+    timer_started = perf_counter()
+    print(
+        f"[GOLD START] {started_at.isoformat()} | sql={sql_file} | "
+        f"target={target_table}"
+    )
+    try:
+        spark.sql(load_sql(sql_file))
+        row_count = spark.table(target_table).count()
+    except Exception as error:
+        duration = perf_counter() - timer_started
+        print(
+            f"[GOLD FAILED] sql={sql_file} | target={target_table} | "
+            f"duration_seconds={duration:.2f} | "
+            f"error={type(error).__name__}: {error}"
+        )
+        raise
+
+    duration = perf_counter() - timer_started
+    completed_at = datetime.now(timezone.utc)
+    print(
+        f"[GOLD COMPLETE] {completed_at.isoformat()} | target={target_table} | "
+        f"rows={row_count:,} | duration_seconds={duration:.2f}"
+    )
+    return GoldTableResult(sql_file, target_table, row_count, duration)
+
+
+def create_gold_tables(spark: SparkSession) -> list[GoldTableResult]:
+    """Persist all four Gold aggregation tables from Silver PASSED rows."""
+    results = [
+        execute_gold_sql(spark, sql_file, target_table)
+        for sql_file, target_table in GOLD_JOBS
+    ]
+    summary = " | ".join(
+        f"{result.target_table.split('.')[-1]}={result.row_count:,}"
+        for result in results
+    )
+    print(f"[GOLD PIPELINE COMPLETE] {summary}")
+    return results
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Build Gold Delta tables from Silver PASSED aggregations."
+    )
+    parser.parse_known_args()
+
+    spark, owns_session = get_or_create_spark("gold-create-tables")
+    try:
+        create_gold_tables(spark)
+    finally:
+        if owns_session:
+            spark.stop()
+
+
+if __name__ == "__main__":
+    main()
