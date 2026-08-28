@@ -7,15 +7,20 @@ This README is the runbook for Databricks. Classic Community Edition used Hive +
 ## Repository layout
 
 ```text
-docs/                  assessment write-ups
-ai-prompts/            per-phase AI development records
-src/data_generation/   CSV generator
-src/bronze/            CSV → Delta ingest
+docs/                  assessment write-ups (requirements, design, DQ)
+ai-prompts/            curated prompt history + per-phase AI records
+src/data_generation/   reproducible CSV generator
+src/bronze/            CSV → managed Delta ingest (append-only)
 src/silver/            DQ flags (no row drops)
-src/gold/              aggregations
+src/gold/              business aggregations (Spark SQL)
 src/dashboard/         Databricks SQL dashboard queries
-data/                  customers.csv, products.csv, orders.csv
+data/                  generated datasets (customers, products, orders)
 ```
+
+**Required submission artefacts**
+
+- Prompt history: [`ai-prompts/PROMPT_HISTORY.md`](ai-prompts/PROMPT_HISTORY.md)
+- Generated datasets: [`data/customers.csv`](data/customers.csv), [`data/products.csv`](data/products.csv), [`data/orders.csv`](data/orders.csv)
 
 ## Prerequisites
 
@@ -160,7 +165,8 @@ Then Bronze **once** → Silver → Gold.
 | `debugging-notes.md` | Runtime failures |
 | `reflection.md` | Reflection |
 | `final-ai-usage-summary.md` | AI right/wrong |
-| `ai-prompts/` | Phase prompt histories |
+| `ai-prompts/PROMPT_HISTORY.md` | Curated prompt history (submission artefact) |
+| `ai-prompts/` | Per-phase AI development records |
 
 ## Constraints
 

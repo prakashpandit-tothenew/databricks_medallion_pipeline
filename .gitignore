@@ -1,2 +1,12 @@
 __pycache__/
 *.py[cod]
+.Python
+.venv/
+venv/
+.env
+.idea/
+.vscode/
+.DS_Store
+*.log
+spark-warehouse/
+metastore_db/
